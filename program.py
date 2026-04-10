@@ -150,7 +150,7 @@ def symuluj_bieg(zawodnicy, tor):
     
     komentarz("Taśma w górę! Poszli!")
     if aktywni:
-        komentarz(random.choice(OPISY_START).format(z_imie=aktywni.imie))
+        komentarz(random.choice(OPISY_START).format(z_imie=aktywni[0].imie))
 
     # --- DYSTANS: 4 OKRĄŻENIA W PODZIALE NA SEKTORY ---
     for okr in range(1, 5):
@@ -290,7 +290,7 @@ def symuluj_bieg(zawodnicy, tor):
                 z.czas_okr = z.czas_calkowity - z.czas_przed_okr
                 
             print(f"\n🏁 KONIEC OKRĄŻENIA {okr} 🏁")
-            lider_czas = aktywni.czas_calkowity
+            lider_czas = aktywni[0].czas_calkowity
             for pos, z in enumerate(aktywni):
                 strata_str = "" if pos == 0 else f" (+{(z.czas_calkowity - lider_czas):.3f}s)"
                 print(f"   {pos+1}. {z.imie} | Czas okrążenia: {z.czas_okr:.3f}s | Czas całkowity: {z.czas_calkowity:.3f}s{strata_str}")
