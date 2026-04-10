@@ -1,221 +1,221 @@
+from flask import Flask, request, jsonify, render_template_string
 import random
-import time
+import math
+
+app = Flask(__name__)
+
+# ==========================================
+# SILNIK FIZYCZNY I TELEMETRYCZNY
+# ==========================================
 
 class Tor:
-    def __init__(self, nazwa, dlugosc, nawierzchnia):
+    def __init__(self, nazwa, dlugosc, material, nachylenie_lukow, szerokosc, ubicie, bronowanie, nawodnienie):
         self.nazwa = nazwa
         self.dlugosc = dlugosc
-        self.nawierzchnia = nawierzchnia
-        self.koleiny = 0.0
-        self.przyczepnosc_krawaznik = 1.0 if nawierzchnia == 'kopa' else 0.8
-        self.przyczepnosc_banda = 0.6 if nawierzchnia == 'kopa' else 0.5
+        self.material = material
+        self.nachylenie_lukow = nachylenie_lukow
+        self.szerokosc = szerokosc
+        self.ubicie = ubicie
+        self.bronowanie = bronowanie
+        self.nawodnienie = nawodnienie
         
+        self.efektywna_twardosc = max(0.0, (self.ubicie - self.bronowanie) / 100.0)
+        self.efektywna_luznosc = max(0.0, (self.bronowanie - self.ubicie) / 100.0)
+        
+        self.kohezja = max(0.4, 1.0 - (abs(60.0 - self.nawodnienie) * 0.012))
+
+        if self.material == 'granit': baza_mat = 0.75 
+        elif self.material == 'sjenit': baza_mat = 0.65 
+        elif self.material == 'lupek': baza_mat = 0.45 
+        else: baza_mat = 0.65
+
+        self.mu_bazowe = baza_mat * self.kohezja * (1.0 + (self.efektywna_luznosc * 0.5))
+
+        self.koleiny = 0.0
+        self.potencjal_odsypu = 0.2 + (self.efektywna_luznosc * 1.5) 
+        self.wsp_zmeczenia = 0.5 + (self.efektywna_luznosc * 1.5) + (self.nawodnienie * 0.01)
+
+        if self.efektywna_luznosc > 0.4:
+            self.przyczepnosc_krawaznik = self.mu_bazowe * 1.4
+            self.przyczepnosc_banda = self.mu_bazowe * 0.85
+        elif self.efektywna_twardosc > 0.6:
+            self.przyczepnosc_krawaznik = self.mu_bazowe * 0.95
+            self.przyczepnosc_banda = self.mu_bazowe * 1.05
+        else:
+            self.przyczepnosc_krawaznik = self.mu_bazowe * 1.15
+            self.przyczepnosc_banda = self.mu_bazowe * 0.95
+            
     def aktualizuj_tor(self):
-        self.koleiny = min(1.0, self.koleiny + 0.1)
-        self.przyczepnosc_krawaznik -= 0.05
-        self.przyczepnosc_banda += 0.10
+        przyrost_kolein = (0.01 + (self.efektywna_luznosc * 0.04)) * (self.nawodnienie / 50.0)
+        self.koleiny = min(1.0, self.koleiny + przyrost_kolein)
+        przesuniecie_materialu = 0.05 * self.potencjal_odsypu * self.kohezja
+        self.przyczepnosc_krawaznik -= (przesuniecie_materialu * 0.5) 
+        self.przyczepnosc_banda += przesuniecie_materialu
+
 
 class Motocykl:
-    def __init__(self, zebatka_przod, zebatka_tyl, opona):
-        self.przelozenie = zebatka_tyl / zebatka_przod
-        self.opona = opona
-        self.stan_opony = 100.0
+    def __init__(self, przelozenie, opona):
+        self.przelozenie = przelozenie 
+        self.opona = opona 
+        self.stan_bieznika = 100.0
+        self.temperatura = 50.0 
         
-    def degraduj(self, agresja):
-        spadek = 15 if self.opona == 'Anlas' else 10
-        self.stan_opony = max(0.0, self.stan_opony - (spadek * (agresja/100)))
+    def degraduj_i_nagrzewaj(self, agresja, tor_twardosc):
+        mnoznik_temp = 1.0 + (tor_twardosc * 1.5)
+        agresja_wsp = agresja / 100.0
+        if self.opona == 'Anlas':
+            self.temperatura += (agresja_wsp * 0.8) * mnoznik_temp
+            self.stan_bieznika -= (agresja_wsp * 1.5) 
+        else:
+            self.temperatura += (agresja_wsp * 0.4) * mnoznik_temp
+            self.stan_bieznika -= (agresja_wsp * 0.6)
+        self.stan_bieznika = max(0.0, self.stan_bieznika)
+        
+    def pobierz_wsp_trakcji(self):
+        if self.opona == 'Anlas':
+            kary_temp = 0.0 if 70 < self.temperatura < 110 else 0.20
+            baza = 1.10 if self.stan_bieznika > 50 else 0.70 
+            return max(0.3, baza - kary_temp)
+        else:
+            return max(0.6, 1.0 - ((100.0 - self.stan_bieznika) * 0.001))
+
 
 class Zawodnik:
     def __init__(self, imie, pole, refleks, gaz, balans, zmysl, agresja, taktyka, motocykl):
         self.imie = imie
         self.pole = pole
-        self.refleks = refleks
-        self.kontrola_gazu = gaz
-        self.balans = balans
-        self.zmysl_mechaniczny = zmysl
-        self.agresja = agresja
+        self.refleks = float(refleks)
+        self.kontrola_gazu = float(gaz)
+        self.balans = float(balans)
+        self.zmysl_mechaniczny = float(zmysl)
+        self.agresja = float(agresja)
         self.taktyka = taktyka
         self.motocykl = motocykl
         
+        self.stamina = 100.0
+        self.wybrana_linia = 'krawaznik'
         self.aktywny = True
         self.powod_wykluczenia = ""
         self.czas_calkowity = 0.0 
-        self.czas_okr = 0.0
-        self.czas_przed_okr = 0.0
+        self.telemetria = []
 
-# --- BAZA RÓŻNORODNYCH KOMENTARZY ŻUŻLOWYCH ---
-OPISY_START = list((
-    "Najlepiej ze startu zabrał się {z_imie}!",
-    "Atomowy start! {z_imie} od razu wysuwa się na czoło stawki.",
-    "Świetny refleks! {z_imie} zakłada rywali na dojeździe do pierwszego łuku.",
-    "Idealnie wstrzelił się w zamek maszyny startowej! {z_imie} z przewagą już na pierwszych metrach."
-))
+    def to_dict(self, miejsce, pkt):
+        return {
+            "imie": self.imie,
+            "kask": self.pole,
+            "aktywny": self.aktywny,
+            "powod_wykluczenia": self.powod_wykluczenia,
+            "czas_calkowity": self.czas_calkowity,
+            "stamina": self.stamina,
+            "miejsce": miejsce,
+            "pkt": pkt,
+            "telemetria": self.telemetria,
+            "motocykl": {
+                "opona": self.motocykl.opona,
+                "stan_bieznika": self.motocykl.stan_bieznika,
+                "temperatura": self.motocykl.temperatura
+            }
+        }
 
-OPISY_TASMA = list((
-    "KATASTROFA! {z_imie} wjeżdża w taśmę i zostaje wykluczony!",
-    "Ależ błąd! {z_imie} zrywa taśmę! Sędzia nie miał absolutnie żadnych wątpliwości.",
-    "Nerwy nie wytrzymały! {z_imie} dotyka taśmy i żegna się z tym biegiem."
-))
 
-OPISY_UPADEK = list((
-    "❌ KRAKSA! {z_imie} wpadł w głęboką koleinę i leży na torze!",
-    "❌ UPADEK! Motocykl podbiło na nierówności, {z_imie} zapoznaje się z nawierzchnią!",
-    "❌ GROŹNA SYTUACJA! {z_imie} nie opanował maszyny, uślizg i uderzenie o tor!"
-))
+OPISY = {
+    "START": ["🚀 Atomowy start! {z} wysuwa się na czoło.", "💨 Świetny refleks! {z} zakłada rywali na dojeździe."],
+    "TASMA": ["❌ KATASTROFA! {z} wjeżdża w taśmę!"],
+    "DEFEKT": ["🔧 DEFEKT! Silnik nie wytrzymał u {z}!"],
+    "OBRONA": ["🛡️ {ryw} zamyka ścieżkę! {z} musi szukać innej linii.", "🛡️ {z} przymknął gaz, by nie wjechać w rywala ({ryw})."],
+    "ATAK": ["🔥 Co za manewr! {z} mija rywala ({ryw}) na dystansie!", "🔥 Profesor! {z} nakrywa rywala ({ryw})!"],
+    "POGON": ["⚡ {z} napędza się niesamowicie! Zbliża się do rywala!"]
+}
 
-OPISY_DEFEKT = list((
-    "🔧 DEFEKT! Z motocykla poszedł gęsty dym! {z_imie} kończy jazdę!",
-    "🔧 KOSZMAR! Sprzęt odmówił posłuszeństwa, {z_imie} zwalnia na torze.",
-    "🔧 Zerwany łańcuch! {z_imie} traci szansę na zdobycie jakichkolwiek punktów w tym biegu."
-))
+def symuluj_wyscig(dane_toru, dane_zawodnikow):
+    tor = Tor(**dane_toru)
+    zawodnicy = []
+    for d in dane_zawodnikow:
+        moto = Motocykl(float(d['zebatka_tyl'])/14.0, d['opona'])
+        z = Zawodnik(d['imie'], d['kask'], d['refleks'], d['gaz'], d['balans'], d['zmysl'], d['agresja'], d['taktyka'], moto)
+        zawodnicy.append(z)
 
-OPISY_OBRONA = list((
-    "🛡️ {z_imie} dwoi się i troi, ale {ryw_imie} mądrze zamyka przysłowiowe 'drzwi'!",
-    "🛡️ Piękna walka! {z_imie} próbuje atakować, lecz {ryw_imie} jedzie wyśmienicie taktycznie.",
-    "🛡️ Fantastyczna defensywa! {ryw_imie} nie zostawia rywalowi ({z_imie}) ani centymetra wolnego miejsca."
-))
+    wydarzenia = []
+    def dodaj_wydarzenie(typ, czas, tekst):
+        wydarzenia.append({"typ": typ, "czas": float(czas), "tekst": tekst})
 
-# --- KOMENTARZE GRUPOWE (BARDZO WIDOWISKOWE) ---
-OPISY_POTROJNE = list((
-    "🤯 NIEPRAWDOPODOBNE! {z_imie} mija wszystkich trzech rywali ({lista_rywali}) w jednym genialnym ataku! Przechodzi do historii!",
-    "🚀 CO ZA SZARŻA! Z ostatniego na pierwsze miejsce! {z_imie} objeżdża całą stawkę ({lista_rywali}) naraz!",
-    "🔥 POEZJA SPEEDWAYA! {z_imie} wchodzi między trzech rywali ({lista_rywali}) i zostawia ich daleko w tyle! Akcja sezonu!",
-    "👑 CZY ON JEST Z INNEJ PLANETY?! {z_imie} jednym fenomenalnym manewrem wyprzedza całą trójkę ({lista_rywali})!"
-))
-
-OPISY_PODWOJNE = list((
-    "⚡ PODWÓJNE WYPRZEDZANIE! {z_imie} wciska się i mija dwóch zawodników naraz ({lista_rywali})!",
-    "🌪️ DWA PIECZENIE NA JEDNYM OGNIU! {z_imie} niesamowitym napędem objeżdża duet: {lista_rywali}!",
-    "🚀 KAPITALNA MIJANKA! {z_imie} bez kompleksów ogrywa dwóch rywali ({lista_rywali}) i przejmuje ich pozycje!",
-    "🔥 {z_imie} ma dziś prędkość światła! Wyprzedza {lista_rywali} w jednej, spektakularnej akcji!"
-))
-
-# --- KOMENTARZE POJEDYNCZE (1 NA 1) ---
-OPISY_WEJSCIE = list((
-    "🔥 Pikuje pod łokieć! {z_imie} ostro wchodzi w łuk i mija rywala ({ryw_imie})!",
-    "🔥 Brutalny wjazd! {z_imie} wciska się po wewnętrznej i zostawia w tyle zawodnika z przodu ({ryw_imie}).",
-    "🔥 Znalazł lukę przy krawężniku! {z_imie} bezbłędnie wyprzedza ({ryw_imie}) na wejściu w wiraż."
-))
-
-OPISY_SZCZYT = list((
-    "🔥 Krótka piłka na szczycie łuku! {z_imie} znajduje fenomenalną przyczepność i wyprzedza ({ryw_imie}).",
-    "🔥 Ależ złamał ten motocykl! {z_imie} ciaśniej na szczycie, a ({ryw_imie}) zostaje w tyle!",
-    "🔥 Walka na żyletki! {z_imie} objeżdża rywala ({ryw_imie}) dokładnie w połowie wirażu."
-))
-
-OPISY_WYJSCIE_LATE = list((
-    "🔥 Klasyczne nożyce! {z_imie} ściął do krawężnika i z potężnym napędem mija ({ryw_imie})!",
-    "🔥 Co za manewr! {z_imie} pojechał na opóźniony wierzchołek i dosłownie połknął rywala ({ryw_imie}).",
-    "🔥 Prawdziwa inteligencja torowa! {z_imie} przycina do małej i bezlitośnie objeżdża ({ryw_imie}) na wyjściu!"
-))
-
-OPISY_WYJSCIE_NORMAL = list((
-    "🔥 Zbudował prędkość pod samą bandą! {z_imie} nakrywa rywala ({ryw_imie}) na wyjściu z łuku!",
-    "🔥 Złapał idealną przyczepność z odsypanej nawierzchni! {z_imie} wyprzedza ({ryw_imie}) na pełnym gazie.",
-    "🔥 Kosmiczna prędkość na wyjściu z wirażu! {z_imie} z łatwością zostawia za plecami ({ryw_imie})."
-))
-
-OPISY_PROSTA = list((
-    "🔥 Czysta moc 85-konnego silnika! {z_imie} mija rywala ({ryw_imie}) na prostej niczym pendolino!",
-    "🔥 Różnica sprzętowa robi swoje! {z_imie} z impetem wyprzedza ({ryw_imie}) pędząc po prostej.",
-    "🔥 Ponad 110 km/h i mijanka! {z_imie} po fenomenalnej walce na prostej jest przed rywalem ({ryw_imie})."
-))
-
-def komentarz(tekst):
-    print(f"   🎙️ {tekst}")
-    time.sleep(0.7)
-
-def symuluj_bieg(zawodnicy, tor):
-    print(f"\n{'='*50}\nBIEG NA TORZE: {tor.nazwa} ({tor.dlugosc}m)\n{'='*50}")
-    
-    # --- FAZA 1: START Z MIEJSCA ---
-    print("\n📍 PROCEDURA STARTOWA:")
-    komentarz("Zawodnicy podjeżdżają pod taśmę... Maszyny na wysokich obrotach!")
+    # START
     for z in zawodnicy:
-        szansa_tasma = 0.05 - (z.refleks * 0.0004)
+        szansa_tasma = 0.04 - (z.refleks * 0.0004)
         if random.random() < szansa_tasma:
             z.aktywny = False
             z.powod_wykluczenia = "Taśma"
-            komentarz(random.choice(OPISY_TASMA).format(z_imie=z.imie))
+            dodaj_wydarzenie("tasma", 0.0, OPISY["TASMA"][0].replace("{z}", z.imie))
+            z.telemetria.append({"sector": 0, "time": 0.0, "line": "krawaznik"})
             continue
             
         baza_reakcji = 0.35 
-        reakcja = baza_reakcji - (z.refleks * 0.002) + random.uniform(0.0, 0.1)
-        bonus_pola = {'A': 0.0, 'B': 0.05, 'C': 0.08, 'D': 0.12} 
+        reakcja = baza_reakcji - (z.refleks * 0.002) + random.uniform(0.0, 0.04)
         
-        z.czas_calkowity = reakcja + bonus_pola[z.pole] 
+        baza_bonusu = {'A': 0.0, 'B': 0.03, 'C': 0.05, 'D': 0.07}
+        if tor.efektywna_luznosc > 0.5:
+            baza_bonusu = {'A': 0.08, 'B': 0.04, 'C': 0.0, 'D': 0.02} 
+            
+        mnoznik = random.uniform(0.9, 1.2) 
+        z.czas_calkowity = reakcja + (baza_bonusu[z.pole] * mnoznik)
+        z.telemetria.append({"sector": 0, "time": z.czas_calkowity, "line": "krawaznik"})
 
-    aktywni = list(z for z in zawodnicy if z.aktywny)
+    aktywni = [z for z in zawodnicy if z.aktywny]
     aktywni.sort(key=lambda x: x.czas_calkowity) 
-    
-    komentarz("Taśma w górę! Poszli!")
     if aktywni:
-        komentarz(random.choice(OPISY_START).format(z_imie=aktywni[0].imie))
+        dodaj_wydarzenie("start", aktywni[0].czas_calkowity, random.choice(OPISY["START"]).replace("{z}", aktywni[0].imie))
 
-    # --- DYSTANS: 4 OKRĄŻENIA W PODZIALE NA SEKTORY ---
+    globalny_sektor = 0
+    sektory = ["prosta", "wejscie", "szczyt", "wyjscie"] * 2
+    baza_sektora = (tor.dlugosc / 8.0) / 23.5 
+
     for okr in range(1, 5):
-        if len(list(z for z in aktywni if z.aktywny)) == 0: break
-        print(f"\n{'-'*18} OKRĄŻENIE {okr} {'-'*18}")
+        if not aktywni: break
         
-        for z in aktywni:
-            z.czas_przed_okr = z.czas_calkowity if okr > 1 else 0.0
-            
-        kolejnosc_w_sektorze = list(z.imie for z in aktywni)
-        
-        nazwa_prostej = "Dojazd do 1. łuku" if okr == 1 else "Prosta startowa"
-        
-        sektory = tuple((
-            tuple((nazwa_prostej, "prosta")),
-            tuple(("Wejście w 1. łuk", "wejscie")),
-            tuple(("Szczyt 1. łuku", "szczyt")),
-            tuple(("Wyjście z 1. łuku", "wyjscie")),
-            tuple(("Przeciwległa prosta", "prosta")),
-            tuple(("Wejście w 2. łuk", "wejscie")),
-            tuple(("Szczyt 2. łuku", "szczyt")),
-            tuple(("Wyjście z 2. łuku", "wyjscie"))
-        ))
-        
-        baza_sektora = (tor.dlugosc / 8.0) / 22.0 
-        
-        for sektor_nazwa, sektor_typ in sektory:
-            akcje_w_sektorze = list()
-            
+        for sektor_typ in sektory:
+            globalny_sektor += 1
             for z in aktywni:
                 if not z.aktywny: continue
                 
-                if sektor_typ == "wejscie" and random.random() < (0.002 + tor.koleiny * 0.01 - z.balans * 0.00005):
-                    z.aktywny = False
-                    z.powod_wykluczenia = "Upadek"
-                    akcje_w_sektorze.append(random.choice(OPISY_UPADEK).format(z_imie=z.imie))
-                    continue
-                if sektor_typ == "prosta" and random.random() < 0.001:
+                if sektor_typ == "prosta" and random.random() < 0.0003:
                     z.aktywny = False
                     z.powod_wykluczenia = "Defekt"
-                    akcje_w_sektorze.append(random.choice(OPISY_DEFEKT).format(z_imie=z.imie))
+                    dodaj_wydarzenie("defekt", z.czas_calkowity, OPISY["DEFEKT"][0].replace("{z}", z.imie))
                     continue
-                    
-                wsp_przyczepnosci = tor.przyczepnosc_banda if z.zmysl_mechaniczny > 70 else tor.przyczepnosc_krawaznik
-                bonus_opony = 1.05 if z.motocykl.opona == 'Anlas' and z.motocykl.stan_opony > 50 else 1.0
-                
-                zysk = 0.0
-                if sektor_typ == "prosta":
-                    zysk = (z.motocykl.przelozenie * 0.015) + (z.kontrola_gazu * 0.002)
-                elif sektor_typ == "wejscie":
-                    zysk = (z.balans * 0.003)
-                elif sektor_typ == "szczyt":
-                    zysk = (z.balans * 0.002) * wsp_przyczepnosci
-                elif sektor_typ == "wyjscie":
-                    if z.taktyka == 'late_apex':
-                        zysk = (z.kontrola_gazu * 0.004) * wsp_przyczepnosci * bonus_opony
-                    else:
-                        zysk = (z.kontrola_gazu * 0.0025) * wsp_przyczepnosci * bonus_opony
                         
-                czas_sektora = baza_sektora - zysk + random.uniform(0.01, 0.06)
-                z.czas_calkowity += czas_sektora
-                z.motocykl.degraduj(z.agresja / 8.0)
-            
-            aktywni = list(z for z in aktywni if z.aktywny)
-            if not aktywni: break
+                z.wybrana_linia = 'banda' if z.zmysl_mechaniczny > 75 and tor.przyczepnosc_banda > tor.przyczepnosc_krawaznik else 'krawaznik'
+                przyczepnosc_efektywna = tor.przyczepnosc_banda if z.wybrana_linia == 'banda' else tor.przyczepnosc_krawaznik
+                trakcja = z.motocykl.pobierz_wsp_trakcji()
+                przelozenie = z.motocykl.przelozenie
+                zysk = 0.0
+                
+                if sektor_typ == "prosta":
+                    wsp_dlugosci = tor.dlugosc / 320.0
+                    zysk = ((4.5 - przelozenie) * 0.018 * wsp_dlugosci) + ((z.kontrola_gazu / 100.0) * 0.04) 
+                    if przelozenie > 4.3 and tor.dlugosc > 360 and random.random() < 0.03:
+                        dodaj_wydarzenie("warn", z.czas_calkowity, f"⚠️ Silnik {z.imie} wyje na prostej! (odcinka)")
+                elif sektor_typ == "wejscie":
+                    zysk = ((z.balans / 100.0) * 0.03) + ((z.zmysl_mechaniczny / 100.0) * 0.02) 
+                elif sektor_typ == "szczyt":
+                    bonus_banking = tor.nachylenie_lukow * 0.001
+                    if z.taktyka == 'klasyczna': zysk = ((z.balans / 100.0) * 0.04 + bonus_banking) * przyczepnosc_efektywna * trakcja
+                    else: zysk = -0.005 + bonus_banking 
+                elif sektor_typ == "wyjscie":
+                    kara_za_ciezar = 0.0 if przelozenie >= 4.1 else (tor.efektywna_luznosc * 0.02)
+                    zysk_przysp = (przelozenie - 3.7) * 0.025 * (1.0 + tor.efektywna_luznosc) - kara_za_ciezar
+                    if przelozenie < 3.9 and tor.efektywna_luznosc > 0.5 and random.random() < 0.03:
+                         dodaj_wydarzenie("warn", z.czas_calkowity, f"⚠️ Motocykl {z.imie} muli na wyjściu z łuku!")
+                    if z.taktyka == 'late_apex': zysk = (zysk_przysp * 1.3) + ((z.kontrola_gazu / 100.0) * 0.05) * przyczepnosc_efektywna * trakcja
+                    else: zysk = zysk_przysp + ((z.kontrola_gazu / 100.0) * 0.03) * przyczepnosc_efektywna * trakcja
+
+                z.stamina = max(0, z.stamina - (tor.wsp_zmeczenia * (z.agresja / 100.0)))
+                if z.stamina < 30.0: zysk -= 0.020 
+
+                z.motocykl.degraduj_i_nagrzewaj(z.agresja, tor.efektywna_twardosc)
+                z.czas_calkowity += baza_sektora - zysk + random.uniform(0.005, 0.015)
+                z.telemetria.append({"sector": globalny_sektor, "time": z.czas_calkowity, "line": z.wybrana_linia})
+
+            aktywni = [z for z in aktywni if z.aktywny]
             aktywni.sort(key=lambda x: x.czas_calkowity)
             
             atakowali = set()
@@ -224,97 +224,362 @@ def symuluj_bieg(zawodnicy, tor):
                 rywal = aktywni[i-1]
                 strata = z.czas_calkowity - rywal.czas_calkowity
                 
-                if strata < 0.15 and z.imie not in atakowali:
+                if 0.10 < strata < 0.25 and random.random() < 0.05 and z.zmysl_mechaniczny > 85:
+                    dodaj_wydarzenie("info", z.czas_calkowity, OPISY["POGON"][0].replace("{z}", z.imie))
+
+                if strata < 0.08 and z.imie not in atakowali:
                     atakowali.add(z.imie)
-                    if z.agresja + random.randint(0, 40) > rywal.agresja + random.randint(0, 40):
-                        z.czas_calkowity = rywal.czas_calkowity - 0.02
-                    else:
-                        if random.random() < 0.08:
-                            akcje_w_sektorze.append(random.choice(OPISY_OBRONA).format(z_imie=z.imie, ryw_imie=rywal.imie))
+                    szansa_ataku = 0.2 + (z.agresja * 0.002) + (z.zmysl_mechaniczny * 0.002)
+                    if okr > 1: szansa_ataku *= 0.5 
+                    
+                    if random.random() < szansa_ataku:
+                        sila_ataku = (z.agresja * 1.2) + z.kontrola_gazu + z.zmysl_mechaniczny + random.randint(0, 30)
+                        sila_obrony = (rywal.agresja * 1.2) + rywal.balans + rywal.zmysl_mechaniczny + random.randint(0, 30)
+                        
+                        if sila_ataku > sila_obrony:
+                            z.czas_calkowity = rywal.czas_calkowity - 0.010 
+                            rywal.czas_calkowity += random.uniform(0.04, 0.08) 
+                            dodaj_wydarzenie("atak", z.czas_calkowity, random.choice(OPISY["ATAK"]).replace("{z}", z.imie).replace("{ryw}", rywal.imie))
+                            z.telemetria[-1]["time"] = z.czas_calkowity
+                            rywal.telemetria[-1]["time"] = rywal.czas_calkowity
+                        else:
+                            z.czas_calkowity += random.uniform(0.02, 0.05)
+                            if random.random() < 0.3:
+                                dodaj_wydarzenie("obrona", z.czas_calkowity, random.choice(OPISY["OBRONA"]).replace("{z}", z.imie).replace("{ryw}", rywal.imie))
+                            z.telemetria[-1]["time"] = z.czas_calkowity
             
             aktywni.sort(key=lambda x: x.czas_calkowity)
-            nowa_kolejnosc = list(z.imie for z in aktywni)
-            
-            # --- ZAAWANSOWANA LOGIKA WYKRYWANIA GRUPOWYCH WYPRZEDZEŃ ---
-            for imie in nowa_kolejnosc:
-                if imie not in kolejnosc_w_sektorze: continue
-                
-                idx_new = nowa_kolejnosc.index(imie)
-                idx_old = kolejnosc_w_sektorze.index(imie)
-                
-                if idx_new < idx_old:
-                    z_obj = next(zaw for zaw in aktywni if zaw.imie == imie)
-                    pokonani = list()
-                    
-                    for ryw_imie in kolejnosc_w_sektorze:
-                        if ryw_imie == imie: continue
-                        if ryw_imie not in nowa_kolejnosc: continue
-                        
-                        ryw_idx_old = kolejnosc_w_sektorze.index(ryw_imie)
-                        ryw_idx_new = nowa_kolejnosc.index(ryw_imie)
-                        
-                        if idx_old > ryw_idx_old and idx_new < ryw_idx_new:
-                            pokonani.append(ryw_imie)
-                    
-                    # Różnicowanie komentarzy w zależności od ilości wyprzedzonych rywali
-                    if len(pokonani) == 3:
-                        format_rywali = ", ".join(pokonani)
-                        akcje_w_sektorze.append(random.choice(OPISY_POTROJNE).format(z_imie=z_obj.imie, lista_rywali=format_rywali))
-                    elif len(pokonani) == 2:
-                        format_rywali = " i ".join(pokonani)
-                        akcje_w_sektorze.append(random.choice(OPISY_PODWOJNE).format(z_imie=z_obj.imie, lista_rywali=format_rywali))
-                    elif len(pokonani) == 1:
-                        ryw_imie_solo = pokonani
-                        if sektor_typ == "wyjscie" and z_obj.taktyka == "late_apex":
-                            akcje_w_sektorze.append(random.choice(OPISY_WYJSCIE_LATE).format(z_imie=z_obj.imie, ryw_imie=ryw_imie_solo))
-                        elif sektor_typ == "wyjscie":
-                            akcje_w_sektorze.append(random.choice(OPISY_WYJSCIE_NORMAL).format(z_imie=z_obj.imie, ryw_imie=ryw_imie_solo))
-                        elif sektor_typ == "wejscie":
-                            akcje_w_sektorze.append(random.choice(OPISY_WEJSCIE).format(z_imie=z_obj.imie, ryw_imie=ryw_imie_solo))
-                        elif sektor_typ == "prosta":
-                            akcje_w_sektorze.append(random.choice(OPISY_PROSTA).format(z_imie=z_obj.imie, ryw_imie=ryw_imie_solo))
-                        else:
-                            akcje_w_sektorze.append(random.choice(OPISY_SZCZYT).format(z_imie=z_obj.imie, ryw_imie=ryw_imie_solo))
-                                
-            kolejnosc_w_sektorze = list(nowa_kolejnosc)
-            
-            if akcje_w_sektorze:
-                print(f"\n📍 {sektor_nazwa.upper()}:")
-                for akcja in akcje_w_sektorze:
-                    komentarz(akcja)
-            
-        tor.aktualizuj_tor()
+            tor.aktualizuj_tor()
         
-        if aktywni:
-            for z in aktywni:
-                z.czas_okr = z.czas_calkowity - z.czas_przed_okr
-                
-            print(f"\n🏁 KONIEC OKRĄŻENIA {okr} 🏁")
-            lider_czas = aktywni[0].czas_calkowity
-            for pos, z in enumerate(aktywni):
-                strata_str = "" if pos == 0 else f" (+{(z.czas_calkowity - lider_czas):.3f}s)"
-                print(f"   {pos+1}. {z.imie} | Czas okrążenia: {z.czas_okr:.3f}s | Czas całkowity: {z.czas_calkowity:.3f}s{strata_str}")
-            print("")
-
-    # --- WYNIKI KOŃCOWE ---
-    print(f"\n{'='*50}\nMETA BIEGU\n{'='*50}")
-    punkty_tab = tuple((3, 2, 1, 0))
-    
-    for i, z in enumerate(aktywni):
-        pkt = punkty_tab[i] if i < len(punkty_tab) else 0
-        print(f"{i+1}. {z.imie} | Czas łączny: {z.czas_calkowity:.3f}s | Pkt: {pkt}")
+    punkty_tab = [3, 2, 1, 0]
+    wyniki = []
+    for i, z in enumerate(zawodnicy):
+        miejsce = aktywni.index(z) + 1 if z.aktywny else 4
+        pkt = punkty_tab[miejsce - 1] if z.aktywny else 0
+        wyniki.append(z.to_dict(miejsce, pkt))
         
-    for z in zawodnicy:
-        if not z.aktywny:
-            print(f"-. {z.imie} | Wykluczenie: {z.powod_wykluczenia} | Pkt: 0")
+    wyniki.sort(key=lambda x: (not x['aktywny'], x['czas_calkowity']))
+    wydarzenia.sort(key=lambda x: x['czas'])
 
-if __name__ == "__main__":
-    tor = Tor(nazwa="Stadion im. E. Jancarza", dlugosc=329, nawierzchnia="beton")
+    return {"wyniki": wyniki, "wydarzenia": wydarzenia}
+
+
+# ==========================================
+# APLIKACJA FLASK I INTERFEJS WEBOWY (HTML)
+# ==========================================
+
+INDEX_HTML = """
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Symulator Żużlowy - PRO API</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .custom-scrollbar::-webkit-scrollbar { width: 8px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #1e293b; border-radius: 8px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #475569; border-radius: 8px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #64748b; }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-200 font-sans min-h-screen">
+    <div class="max-w-6xl mx-auto p-6 space-y-6">
+        
+        <!-- Header -->
+        <div class="flex items-center justify-between bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-xl">
+            <div class="flex items-center space-x-4">
+                <div class="w-12 h-12 bg-orange-600 rounded-full flex items-center justify-center font-bold text-2xl shadow-lg">Ż</div>
+                <h1 class="text-3xl font-bold tracking-wider">SYMULATOR <span class="text-orange-500">PRO</span></h1>
+            </div>
+            <div class="text-slate-400 font-mono">Silnik: Python Flask | Render: JS</div>
+        </div>
+
+        <div id="setup-view" class="grid md:grid-cols-3 gap-6">
+            <!-- Pasek boczny: Tor i Akcje -->
+            <div class="md:col-span-1 space-y-4">
+                <div class="bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-lg">
+                    <h2 class="text-xl font-bold mb-4 border-b border-slate-700 pb-2">Wybór Toru</h2>
+                    <select id="track-select" class="w-full bg-slate-700 border border-slate-600 p-3 rounded-lg text-white mb-4">
+                        <option value="gorzow">Gorzów (Optymalny, 329m)</option>
+                        <option value="wroclaw">Wrocław (Ciężka Kopa, 352m)</option>
+                        <option value="krosno">Krosno (Długi Beton, 396m)</option>
+                        <option value="machowa">Machowa (Krótki Techniczny, 260m)</option>
+                    </select>
+                </div>
+                <button onclick="startSimulation()" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold text-xl py-5 rounded-xl shadow-lg transition-transform transform hover:scale-105">
+                    ▶ SYMULUJ BIEG
+                </button>
+            </div>
+
+            <!-- Parametry Zawodników -->
+            <div class="md:col-span-2 bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-lg">
+                <h2 class="text-xl font-bold mb-4 border-b border-slate-700 pb-2">Obsada Wyścigu & Sprzęt</h2>
+                <div class="space-y-4" id="riders-container"></div>
+            </div>
+        </div>
+
+        <!-- Widok Symulacji (Ukryty na start) -->
+        <div id="sim-view" class="hidden space-y-6">
+            <div class="flex justify-between items-center bg-slate-800 p-4 rounded-xl border border-slate-700">
+                <div class="text-xl font-bold" id="sim-title">Trwa Wyścig...</div>
+                <div class="text-orange-500 font-mono text-xl font-bold" id="sim-time">0.00s</div>
+            </div>
+
+            <div class="grid md:grid-cols-2 gap-6">
+                <!-- Animacja Canvas -->
+                <div class="bg-slate-800 p-4 rounded-xl border border-slate-700 flex justify-center items-center">
+                    <canvas id="race-canvas" width="600" height="300" class="w-full h-auto bg-slate-900 rounded-lg shadow-inner border border-slate-700"></canvas>
+                </div>
+                
+                <!-- Log Telemetryczny -->
+                <div class="bg-slate-900 p-4 rounded-xl border border-slate-700 h-[330px] overflow-y-auto custom-scrollbar space-y-2 font-mono text-sm" id="event-log">
+                    <div class="text-slate-500 italic">Oczekiwanie na start...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Wyniki (Ukryte na start) -->
+        <div id="results-view" class="hidden space-y-6">
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700 text-center shadow-lg">
+                <h2 class="text-3xl font-bold text-orange-500 mb-2">🏁 META BIEGU</h2>
+            </div>
+            <div class="grid gap-4" id="results-container"></div>
+            <div class="flex justify-center pt-4">
+                <button onclick="resetView()" class="bg-slate-700 hover:bg-slate-600 text-white px-8 py-3 rounded-lg font-bold shadow-lg">NOWY BIEG</button>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const TRACK_DATA = {
+            'gorzow': { nazwa: "Gorzów (Klasyk)", dlugosc: 329, material: "sjenit", nachylenie_lukow: 2.5, szerokosc: 10.0, ubicie: 60, bronowanie: 40, nawodnienie: 50 },
+            'wroclaw': { nazwa: "Wrocław (Głęboka Kopa)", dlugosc: 352, material: "sjenit", nachylenie_lukow: 3.0, szerokosc: 11.5, ubicie: 10, bronowanie: 90, nawodnienie: 70 },
+            'krosno': { nazwa: "Krosno (Długi Beton)", dlugosc: 396, material: "granit", nachylenie_lukow: 4.0, szerokosc: 15.0, ubicie: 95, bronowanie: 0, nawodnienie: 30 },
+            'machowa': { nazwa: "Machowa (Płaski)", dlugosc: 260, material: "lupek", nachylenie_lukow: 0.0, szerokosc: 9.0, ubicie: 50, bronowanie: 50, nawodnienie: 40 }
+        };
+
+        const RIDER_PRESETS = [
+            { imie: "B. Zmarzlik", kask: 'A', ref: 96, gaz: 98, bal: 95, zmysl: 96, agr: 95, taktyka: 'late_apex', ztyl: 57, opona: 'Mitas', color: '#ef4444' },
+            { imie: "M. Janowski", kask: 'B', ref: 95, gaz: 96, bal: 96, zmysl: 95, agr: 94, taktyka: 'klasyczna', ztyl: 58, opona: 'Mitas', color: '#3b82f6' },
+            { imie: "L. Madsen",   kask: 'C', ref: 94, gaz: 95, bal: 94, zmysl: 94, agr: 96, taktyka: 'klasyczna', ztyl: 57, opona: 'Anlas', color: '#f8fafc' },
+            { imie: "M. Michelsen",kask: 'D', ref: 95, gaz: 94, bal: 95, zmysl: 93, agr: 95, taktyka: 'late_apex', ztyl: 58, opona: 'Anlas', color: '#eab308' }
+        ];
+
+        // Budowanie formularza zawodników
+        const container = document.getElementById('riders-container');
+        RIDER_PRESETS.forEach((r, i) => {
+            container.innerHTML += `
+                <div class="flex flex-wrap items-center gap-4 p-4 bg-slate-900 rounded-lg border-l-4 shadow-sm" style="border-left-color: ${r.color}">
+                    <div class="w-8 font-bold text-xl text-center" style="color: ${r.color}">${r.kask}</div>
+                    <div class="flex-1 min-w-[150px] font-bold text-lg">${r.imie}</div>
+                    <div class="flex gap-2 items-center">
+                        <span class="text-sm text-slate-400">Tył:</span>
+                        <input type="number" id="gear-${i}" value="${r.ztyl}" class="w-16 bg-slate-700 border border-slate-600 p-2 rounded text-center text-white font-mono">
+                    </div>
+                    <div class="flex gap-2 items-center">
+                        <span class="text-sm text-slate-400">Opona:</span>
+                        <select id="tire-${i}" class="w-24 bg-slate-700 border border-slate-600 p-2 rounded text-white">
+                            <option value="Anlas" ${r.opona=='Anlas'?'selected':''}>Anlas</option>
+                            <option value="Mitas" ${r.opona=='Mitas'?'selected':''}>Mitas</option>
+                        </select>
+                    </div>
+                </div>
+            `;
+        });
+
+        // Logika Animacji i Stanu
+        let animFrame;
+        let simData = null;
+        let currTime = 0.0;
+        let maxTime = 0.0;
+        let lastTimestamp = 0;
+        let shownEvents = new Set();
+
+        async function startSimulation() {
+            const trackKey = document.getElementById('track-select').value;
+            const tor = TRACK_DATA[trackKey];
+            
+            const zawodnicy = RIDER_PRESETS.map((r, i) => ({
+                imie: r.imie, kask: r.kask,
+                refleks: r.ref, gaz: r.gaz, balans: r.bal, zmysl: r.zmysl, agresja: r.agr, taktyka: r.taktyka,
+                zebatka_tyl: parseInt(document.getElementById(`gear-${i}`).value),
+                opona: document.getElementById(`tire-${i}`).value
+            }));
+
+            document.getElementById('setup-view').classList.add('hidden');
+            document.getElementById('sim-view').classList.remove('hidden');
+            document.getElementById('event-log').innerHTML = '';
+            document.getElementById('sim-title').innerText = tor.nazwa;
+            shownEvents.clear();
+            currTime = 0.0;
+
+            const response = await fetch('/api/simulate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tor, zawodnicy })
+            });
+            
+            simData = await response.json();
+            maxTime = Math.max(...simData.wyniki.map(z => z.czas_calkowity)) + 1.0;
+            
+            lastTimestamp = performance.now();
+            animFrame = requestAnimationFrame(animationLoop);
+        }
+
+        function animationLoop(timestamp) {
+            const dt = (timestamp - lastTimestamp) / 1000.0;
+            lastTimestamp = timestamp;
+            currTime += dt * 1.5; // Mnożnik prędkości odtwarzania
+            
+            document.getElementById('sim-time').innerText = currTime.toFixed(2) + 's';
+            drawCanvas(currTime);
+            updateLog(currTime);
+
+            if (currTime >= maxTime) {
+                showResults();
+            } else {
+                animFrame = requestAnimationFrame(animationLoop);
+            }
+        }
+
+        function drawCanvas(t) {
+            const canvas = document.getElementById('race-canvas');
+            const ctx = canvas.getContext('2d');
+            
+            ctx.fillStyle = '#0f172a'; // bg-slate-950
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Tor geometry
+            const cxL = 150, cxR = 450, cy = 150, r = 80;
+            ctx.strokeStyle = '#334155'; ctx.fillStyle = '#475569'; ctx.lineWidth = 30;
+            
+            ctx.beginPath();
+            ctx.arc(cxL, cy, r, Math.PI / 2, Math.PI * 1.5);
+            ctx.lineTo(cxR, cy - r);
+            ctx.arc(cxR, cy, r, -Math.PI / 2, Math.PI / 2);
+            ctx.lineTo(cxL, cy + r);
+            ctx.stroke(); ctx.fill();
+
+            // Start line
+            ctx.strokeStyle = 'white'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(300, cy + r - 15); ctx.lineTo(300, cy + r + 15); ctx.stroke();
+
+            if (!simData) return;
+
+            simData.wyniki.forEach(z => {
+                const tel = z.telemetria;
+                if (tel.length === 0) return;
+                let cPt = tel.find(pt => pt.time >= t);
+                let pPt = [...tel].reverse().find(pt => pt.time < t) || tel[0];
+                if (!cPt) cPt = tel[tel.length - 1];
+
+                let prog = pPt.sector;
+                if (cPt.time > pPt.time) {
+                    prog = pPt.sector + ((t - pPt.time) / (cPt.time - pPt.time)) * (cPt.sector - pPt.sector);
+                }
+
+                if (!z.aktywny && prog >= tel[tel.length-1].sector) return; // Defekt hide
+
+                let lapProg = (prog % 8) / 8.0;
+                let baseR = cPt.line === 'banda' ? r + 8 : r - 8;
+                let offset = ['A','B','C','D'].indexOf(z.kask) * 3;
+                let fR = baseR + offset - 4;
+                let x = 0, y = 0;
+
+                if (lapProg < 0.125) { x = 300 + (lapProg/0.125)*150; y = cy + fR; }
+                else if (lapProg < 0.375) { let a = Math.PI/2 - ((lapProg-0.125)/0.25)*Math.PI; x = cxR + Math.cos(a)*fR; y = cy + Math.sin(a)*fR; }
+                else if (lapProg < 0.625) { x = cxR - ((lapProg-0.375)/0.25)*300; y = cy - fR; }
+                else if (lapProg < 0.875) { let a = -Math.PI/2 - ((lapProg-0.625)/0.25)*Math.PI; x = cxL + Math.cos(a)*fR; y = cy + Math.sin(a)*fR; }
+                else { x = cxL + ((lapProg-0.875)/0.125)*150; y = cy + fR; }
+
+                const col = RIDER_PRESETS.find(p=>p.kask === z.kask).color;
+                ctx.beginPath(); ctx.arc(x, y, 6, 0, 2*Math.PI);
+                ctx.fillStyle = col; ctx.fill();
+                ctx.strokeStyle = 'black'; ctx.lineWidth=1; ctx.stroke();
+                
+                ctx.fillStyle = 'white'; ctx.font = '10px sans-serif';
+                ctx.fillText(z.imie.split(' ')[1], x+10, y+4);
+            });
+        }
+
+        function updateLog(t) {
+            const logBox = document.getElementById('event-log');
+            simData.wydarzenia.forEach((e, idx) => {
+                if (e.czas <= t && !shownEvents.has(idx)) {
+                    shownEvents.add(idx);
+                    let colorCls = 'bg-slate-800 border-slate-600';
+                    if (['defekt', 'tasma'].includes(e.typ)) colorCls = 'bg-red-900/40 border-red-500';
+                    if (e.typ === 'warn') colorCls = 'bg-yellow-900/40 border-yellow-500 text-yellow-200';
+                    
+                    logBox.innerHTML += `
+                        <div class="p-2 rounded border-l-2 ${colorCls}">
+                            <span class="text-slate-400 mr-2">[${e.czas.toFixed(2)}s]</span> ${e.tekst}
+                        </div>
+                    `;
+                    logBox.scrollTop = logBox.scrollHeight;
+                }
+            });
+        }
+
+        function showResults() {
+            cancelAnimationFrame(animFrame);
+            document.getElementById('sim-view').classList.add('hidden');
+            document.getElementById('results-view').classList.remove('hidden');
+            
+            const cont = document.getElementById('results-container');
+            cont.innerHTML = '';
+            simData.wyniki.forEach(z => {
+                const c = RIDER_PRESETS.find(p=>p.kask === z.kask).color;
+                const status = z.aktywny ? `
+                    <div class="flex gap-4">
+                        <div class="text-center"><div class="text-slate-400 text-xs">Czas</div><div class="font-mono text-green-400 font-bold">${z.czas_calkowity.toFixed(3)}s</div></div>
+                        <div class="text-center"><div class="text-slate-400 text-xs">Opona</div><div class="font-mono text-yellow-400 font-bold">${z.motocykl.stan_bieznika.toFixed(0)}%</div></div>
+                        <div class="text-center"><div class="text-slate-400 text-xs">Temp</div><div class="font-mono ${z.motocykl.temperatura>100?'text-red-500':'text-orange-400'} font-bold">${z.motocykl.temperatura.toFixed(0)}°C</div></div>
+                    </div>
+                ` : `<div class="text-red-500 font-bold">WYKLUCZENIE</div>`;
+
+                cont.innerHTML += `
+                    <div class="bg-slate-800 p-4 rounded-xl border-l-8 flex justify-between items-center" style="border-left-color: ${c}">
+                        <div class="flex items-center space-x-4">
+                            <div class="text-2xl font-bold text-slate-500">${z.miejsce}.</div>
+                            <div>
+                                <div class="text-xl font-bold">${z.imie}</div>
+                                <div class="text-sm text-slate-400">Pkt: <span class="text-white font-bold">${z.pkt}</span></div>
+                            </div>
+                        </div>
+                        ${status}
+                    </div>
+                `;
+            });
+        }
+
+        function resetView() {
+            document.getElementById('results-view').classList.add('hidden');
+            document.getElementById('setup-view').classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>
+"""
+
+# ==========================================
+# ENDPOINTY API
+# ==========================================
+
+@app.route('/')
+def index():
+    return render_template_string(INDEX_HTML)
+
+@app.route('/api/simulate', methods=['POST'])
+def run_simulation():
+    data = request.json
+    tor_data = data['tor']
+    zawodnicy_data = data['zawodnicy']
     
-    z1 = Zawodnik("B. Zmarzlik", 'A', refleks=95, gaz=98, balans=95, zmysl=90, agresja=95, taktyka='late_apex', motocykl=Motocykl(20, 41, 'Anlas'))
-    z2 = Zawodnik("M. Janowski", 'B', refleks=85, gaz=90, balans=92, zmysl=85, agresja=80, taktyka='klasyczna', motocykl=Motocykl(20, 42, 'Mitas'))
-    z3 = Zawodnik("L. Madsen",   'C', refleks=88, gaz=85, balans=88, zmysl=80, agresja=85, taktyka='klasyczna', motocykl=Motocykl(21, 44, 'Mitas'))
-    z4 = Zawodnik("M. Michelsen",'D', refleks=90, gaz=88, balans=85, zmysl=85, agresja=88, taktyka='late_apex', motocykl=Motocykl(21, 43, 'Anlas'))
-    
-    lista_zawodnikow = list((z1, z2, z3, z4))
-    symuluj_bieg(lista_zawodnikow, tor)
+    wyniki_symulacji = symuluj_wyscig(tor_data, zawodnicy_data)
+    return jsonify(wyniki_symulacji)
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)
