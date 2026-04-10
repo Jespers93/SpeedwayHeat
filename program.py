@@ -686,6 +686,5 @@ def run_simulation():
     wyniki_symulacji = symuluj_wyscig(tor_data, zawodnicy_data)
     return jsonify(wyniki_symulacji)
 
-if __name__ == '__main__':
-    # Uruchomienie lokalnego serwera na porcie 5000
-    app.run(debug=True, port=5000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
